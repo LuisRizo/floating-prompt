@@ -1,0 +1,31 @@
+{
+  "_comment_install": "GLOBAL install (~/.claude/settings.json): CLAUDE_PROJECT_DIR does NOT expand here, so the path below is ABSOLUTE. Edit the path to match your user. PROJECT install (.claude/settings.json): you may instead use ${CLAUDE_PROJECT_DIR}/.claude/hooks/floating-prompt.exe.",
+  "_comment_setup": "Single-file install: mkdir %USERPROFILE%\\.claude\\hooks  then copy floating-prompt.exe (built via cargo build --release) into it. The args form below skips shell quoting entirely - no PowerShell layer involved. launch.ps1 + Show-AgentPrompt.ps1 are LEGACY and no longer required.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe",
+            "args": ["--hook", "Stop"],
+            "timeout": 3600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe",
+            "args": ["--hook", "Question"],
+            "timeout": 3600
+          }
+        ]
+      }
+    ]
+  }
+}

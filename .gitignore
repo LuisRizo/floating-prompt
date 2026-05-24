@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target/
+
+# Smoke-test screenshots (regenerable; large)
+/tests/screenshots/
+
+# OS / editor
+*.swp
+.DS_Store
+Thumbs.db

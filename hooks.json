@@ -1,0 +1,41 @@
+{
+  "description": "Block the turn behind a floating window until answered or double-Esc dismissed",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.ps1\" -Event Stop",
+            "timeout": 3600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.ps1\" -Event Question",
+            "timeout": 3600
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.ps1\" -Event Gate",
+            "timeout": 3600
+          }
+        ]
+      }
+    ]
+  }
+}
