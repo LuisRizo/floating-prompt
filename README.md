@@ -219,7 +219,7 @@ Builds against `windows` crate 0.52.
 ## Layout
 
 ```
-main.rs                          single-file Rust binary (~2 KLOC)
+main.rs                          single-file Rust binary (~5 KLOC)
 Cargo.toml                       windows 0.52 + serde_json
 REQUIREMENTS.md                  R1-R9 spec + deferred items
 DESIGN-BRIEF.md                  historical design brief for the redesign
