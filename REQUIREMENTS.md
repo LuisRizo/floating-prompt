@@ -13,6 +13,17 @@ Append-only spec (don't rewrite history — strike through obsolete clauses).
 - Double-Esc anywhere (focus-independent global hook) → no stdout, exit code **10**.
 - Window starts topmost + no-activate (does not steal focus). Click activates it so the edit box can receive input.
 
+## R7 — Queue badge format (UPDATED)
+
+Replaces the original R2.3 wording. The queue indicator in the top row is
+now a **bare number** rendered as a small monospace badge, NOT the
+"`X of Y`" text from v0.2.
+
+- R7.1: When `total ≥ 2`, the badge shows just the total (e.g. `"3"`).
+- R7.2: When `total ≤ 1`, no badge is rendered at all.
+- R7.3: The position-within-queue (`X`) is intentionally not shown — the
+  user only cares "how many more are waiting", not "which one am I."
+
 ## R2 — Multi-session queue (NEW)
 
 Multiple concurrent Claude Code sessions can hit hooks at the same time. Each hook
@@ -69,17 +80,90 @@ Both R2 and R3 ship with tests:
 
 ---
 
+## R9 — Global enable / disable toggle (NEW)
+
+The whole popup system can be toggled off without uninstalling the hooks
+or editing `~/.claude/settings.json`.
+
+- R9.1: An `enabled: bool` field in `state.json` (default `true` if
+  missing — back-compat with v0.2 state files).
+- R9.2: When `enabled == false`, the hook-mode entry point
+  (`floating-prompt.exe --hook ...`) exits 0 silently with no UI and no
+  decision JSON — Claude Code proceeds normally as if no hook ran.
+- R9.3: CLI-mode invocations (`floating-prompt.exe --message ...`) ignore
+  the flag — the user explicitly asked for a window.
+- R9.4: The toggle is applied at the next hook fire; Claude Code does NOT
+  need a restart (hot-reload via `state.json`).
+- R9.5: Managed by the `/floating-prompt on` and `/floating-prompt off`
+  skill subcommands. `/floating-prompt status` reports the current state.
+
+## R5 — Per-project color palette (NEW)
+
+The popup has a small palette family. Each project (= last segment of the
+hook payload's `cwd`) can be mapped to one palette; otherwise the popup uses
+`default`.
+
+- R5.1: Six built-in palettes: `slate`, `ocean`, `amber`, `forest`,
+  `plum`, `default`. Each defines a complete slot schema (bg, panel, chip,
+  chip_border, accent, accent_soft, option_bg, option_hover, option_border,
+  option_number, input_bg, input_border, body, title, dim, scroll_thumb).
+- R5.2: Mapping persists in `state.json` under the `palettes` object:
+  `{ "palettes": { "<project>": "<palette-name>" } }`.
+- R5.3: Resolution order at popup launch:
+  `--palette <name>` flag > `state.json[palettes][project]` > `default`.
+- R5.4: Unknown palette names fall back to `default` (no crash, no popup
+  about config errors).
+- R5.5: A Claude Code skill at `skills/floating-prompt/SKILL.md` lets the
+  user manage the mapping via `/floating-prompt palette <name>` — no exe
+  code is needed for the write.
+
+## R6 — Option modes (NEW)
+
+The popup supports four option-interaction modes; one mode per invocation,
+driven by `--mode <single|multi|preview|approve>`.
+
+- R6.1: **Single** (default). Click an option = immediate submit with that
+  label. Numeric `1.` / `2.` / `3.` prefix on each label as a visual cue.
+- R6.2: **Multi**. Each option has a checkbox. Clicks toggle. Submit
+  (Enter on empty input) returns the selected labels joined by `\n`.
+- R6.3: **Preview**. Single-select, but each option has an associated
+  preview (parallel `--previews "A|B|C"` separator is `|` because previews
+  may contain `,`). Layout becomes two-column: options left, focused
+  preview right.
+- R6.4: **Approve**. The plan/approve UX: exactly one option, painted as
+  a full-width accent-filled primary button. Click submits `"Approve"`.
+  ExitPlanMode-derived prompts default to this mode automatically.
+- R6.5: For Multi mode, an empty selection + empty input + Enter does
+  nothing (no accidental empty submit). Esc-Esc still dismisses.
+- R6.6: Mode is auto-derived in hook mode:
+  - `ExitPlanMode` → Approve
+  - AskUserQuestion `multiSelect:true` → Multi
+  - any option with a non-empty `preview` field → Preview
+  - else → Single
+
+## R8 — Animated dismiss control (NEW)
+
+The dismiss UX is both a keyboard legend AND a clickable target.
+
+- R8.1: Visual: two adjacent pips reading `Esc` `Esc`, plus a faint
+  `Dismiss` label, in the footer-right.
+- R8.2: State machine: `Rest` → (Esc / click) → `Armed` → (second Esc /
+  click within 600 ms) → `Done` (dismiss). If no second event within
+  600 ms → `Timeout` (held ~250 ms) → back to `Rest`.
+- R8.3: When `Armed`, a thin progress bar under the pips drains from
+  full → empty over the 600 ms window. `Timeout` paints the bar nearly
+  empty for the hold period.
+- R8.4: Clicking the dismiss cluster behaves identically to pressing
+  Esc — the same state machine drives it, so the user can confirm a
+  dismiss with two clicks just like two Esc presses.
+- R8.5: The double-Esc keyboard hook (R1) is still global / focus-
+  independent.
+
 ## Deferred (planned, not yet specified)
 
 These are intended future features. Captured here so they aren't lost, but
 explicitly **out of scope for the current milestone**. Each will get its own
 R-section with acceptance criteria when picked up.
-
-- **D1 — Skill to toggle system on/off.** A user-invocable Claude Code skill
-  (e.g. `/floating-prompt on`, `/floating-prompt off`) that flips a flag the
-  `.exe` checks at hook-fire time. When off, the hook exits 0 immediately with
-  no UI and no decision JSON. State persists in `state.json` alongside the
-  window position.
 
 - **D2 — Markdown / code rendering in the message body.** Today the message is
   drawn as a single wrapped text block. Need to render fenced code blocks
@@ -88,13 +172,10 @@ R-section with acceptance criteria when picked up.
   (RichEdit or Direct2D/DirectWrite). Affects `compute_window_size` /
   `measure_message_height`.
 
-- **D3 — Numeric quick-select for options.** Each option button gets a 1-based
-  index shown on the label (e.g. `1. Approve`, `2. Deny`). Typing the digit
-  with focus in the textbox either:
-  - immediately submits that option (if textbox is empty), OR
-  - inserts the digit as a normal character (if textbox already has text).
-  Goal: keyboard-only flow through multi-question Claude AskUserQuestion
-  sequences without reaching for the mouse.
+- **D3 (PARTIAL) — Numeric quick-select for options.** The `1.` / `2.` /
+  `3.` prefix on Single / Preview options is now rendered (visual cue
+  from R6.1). The "type the digit on empty input → submit that option"
+  keyboard handling is still deferred.
 
 - **D4 — Slightly transparent window.** Apply per-pixel alpha (`WS_EX_LAYERED`
   + `SetLayeredWindowAttributes`) so the window is ~90% opaque. Configurable

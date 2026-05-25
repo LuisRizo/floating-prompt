@@ -1,15 +1,17 @@
-# Smoke-test the new UI in a SANDBOXED LOCALAPPDATA so test windows never
-# share a queue with the user's real Claude Code floating-prompt sessions.
+# Smoke-test the redesigned UI in a SANDBOXED LOCALAPPDATA so test windows
+# never share a queue with the user's real Claude Code floating-prompt
+# sessions.
 #
 # Strategy per case:
 #   1. Set $env:LOCALAPPDATA to a fresh temp dir for THIS process tree.
 #   2. Launch floating-prompt.exe with the test args. It inherits our env
 #      and creates its queue + state in the sandbox dir (no interference).
 #   3. Locate the popup window via EnumWindows -> matching pid.
-#   4. Screenshot the window rect (plus a small margin).
-#   5. PostMessage WM_CLOSE to the popup so it tears down cleanly. No
-#      SendKeys/SendInput, no risk of dismissing the user's real popups.
-#   6. Wait for the .exe to exit; if it doesn't, kill it.
+#   4. Optionally inject a synthetic WM_MOUSEMOVE to a target rect-local
+#      coordinate so hover-state captures land on a specific option.
+#   5. Screenshot the window rect (plus a small margin).
+#   6. PostMessage WM_CLOSE to the popup so it tears down cleanly.
+#   7. Wait for the .exe to exit; if it doesn't, kill it.
 # After all cases: restore $env:LOCALAPPDATA and remove the sandbox dir.
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +23,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class U {
-    public const uint WM_CLOSE = 0x0010;
+    public const uint WM_CLOSE     = 0x0010;
+    public const uint WM_MOUSEMOVE = 0x0200;
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumProc cb, IntPtr lp);
     public delegate bool EnumProc(IntPtr h, IntPtr lp);
@@ -37,6 +40,8 @@ public static class U {
     public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")]
     public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")]
+    public static extern bool SendMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 }
 '@
 
@@ -56,7 +61,7 @@ function Find-Popup-ByPid {
     param([int]$ProcId)
     $script:hwndFound = [IntPtr]::Zero
     $script:targetPid = $ProcId
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
         $cb = [U+EnumProc]{
             param($h, $lp)
             $wpid = 0
@@ -85,17 +90,28 @@ function Capture-Case {
         [string]$Name,
         [string]$Title,
         [string]$Message,
-        [string]$Options
+        [string]$Options = "",
+        [string]$Previews = "",
+        [string]$Mode = "",
+        [string]$Project = "claude-integration",
+        [string]$Session = "",
+        [string]$Palette = "",
+        [string]$Placeholder = "",
+        # Inject a synthetic WM_MOUSEMOVE to (x,y) client-local before capture
+        # so a hover visual lands on a known target (e.g. second option).
+        [int]$HoverX = -1,
+        [int]$HoverY = -1
     )
     Write-Host "Case: $Name"
-    # Build a properly-quoted command line. Start-Process -ArgumentList in PS 5.1
-    # does NOT auto-quote args containing spaces, so the long message would
-    # be split into many args at every space. Use ProcessStartInfo.Arguments
-    # so we control the raw command line directly.
     $cmdline = "$(Q '--title') $(Q $Title) $(Q '--message') $(Q $Message)"
-    if ($Options -and $Options.Length -gt 0) {
-        $cmdline += " $(Q '--options') $(Q $Options)"
-    }
+    if ($Options)     { $cmdline += " $(Q '--options') $(Q $Options)" }
+    if ($Previews)    { $cmdline += " $(Q '--previews') $(Q $Previews)" }
+    if ($Mode)        { $cmdline += " $(Q '--mode') $(Q $Mode)" }
+    if ($Project)     { $cmdline += " $(Q '--project') $(Q $Project)" }
+    if ($Session)     { $cmdline += " $(Q '--session') $(Q $Session)" }
+    if ($Palette)     { $cmdline += " $(Q '--palette') $(Q $Palette)" }
+    if ($Placeholder) { $cmdline += " $(Q '--placeholder') $(Q $Placeholder)" }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
     $psi.Arguments = $cmdline
@@ -109,7 +125,13 @@ function Capture-Case {
         try { $p.Kill() } catch {}
         return
     }
-    Start-Sleep -Milliseconds 350  # let paint settle
+    Start-Sleep -Milliseconds 400  # let initial paint settle
+
+    if ($HoverX -ge 0 -and $HoverY -ge 0) {
+        $lp = (($HoverY -band 0xFFFF) -shl 16) -bor ($HoverX -band 0xFFFF)
+        [void][U]::SendMessageW($hwnd, [U]::WM_MOUSEMOVE, [IntPtr]::Zero, [IntPtr]$lp)
+        Start-Sleep -Milliseconds 120
+    }
 
     $r = New-Object U+RECT
     $null = [U]::GetWindowRect($hwnd, [ref]$r)
@@ -130,77 +152,121 @@ function Capture-Case {
     $bmp.Save($shot)
     $g.Dispose(); $bmp.Dispose()
 
-    # Clean teardown via WM_CLOSE (the wndproc treats this as a dismiss).
     [void][U]::PostMessageW($hwnd, [U]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $p.WaitForExit(3000)) {
         Write-Warning "  process did not exit on WM_CLOSE; killing"
         try { $p.Kill() } catch {}
     }
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 120
 }
 
 try {
-    $long = "I refactored the auth middleware to use the new session store. Three files changed: src/auth.ts, src/session.ts, and tests/auth.test.ts. The migration is backward compatible - existing sessions in the old cookie format are read once and rewritten in the new format on next request. I ran the test suite and all 47 cases pass. Want me to ship it or tighten anything first?"
+    $stopShort = "Done. Migrated 14 files and updated the snapshot tests. Two of the snapshots changed in ways worth eyeballing - ProfileMenu and SessionBadge."
 
-    $huge = @(
-        "I dug into the failing migration and here is the full picture.",
+    $stopLong = @(
+        "I pulled the auth flow apart and re-built it around the new RefreshTokenLease primitive. Summary of what changed:",
         "",
-        "Root cause: the new sessions table has a NOT NULL constraint on user_id, but the backfill script was reading from the old cookie blob which sometimes encoded the user id as a string of length zero when the session predated the 2024 cookie rotation. About 0.4 percent of rows fall into that bucket - around 200,000 rows out of 50 million.",
+        "Server - the legacy /oauth/refresh handler now delegates to LeaseStore.acquire() instead of writing directly to the cache. That lets a second concurrent request piggy-back on the same upstream refresh rather than firing its own. Tests for the lease race are in auth/lease.spec.ts - all passing.",
         "",
-        "What I changed:",
-        "1. The backfill now logs and skips any row where the parsed user_id is empty, instead of crashing the whole migration.",
-        "2. Added a follow-up scan that re-resolves skipped rows via the audit log, which has a clean user_id field for 92 percent of cases.",
-        "3. The remaining ~16,000 truly-orphaned rows get a NULL user_id, and the column constraint is relaxed to NULL + a partial index so legacy rows do not block new inserts.",
+        "Client - replaced the imperative refresh() call with a React Query mutation, so the staleness check now happens in the query cache instead of being scattered across each call site. I removed useAuthRefresh entirely; the four places that called it now read from useSession().",
         "",
-        "Verified locally against a snapshot of prod: full migration runs in 4m12s, no errors. The query plan for the partial index looks healthy.",
+        "Migration note - three feature flags referenced the old code path; I left them in place but flipped them to no-ops so a rollback can flip them back without code changes. They should be deleted next sprint.",
         "",
-        "Three open questions for you before I ship:",
-        "- Do we want to surface the 16,000 orphans to ops, or silently drop them? My read is silently drop, since they cannot be reached anyway, but it is your call.",
-        "- The audit log re-resolution adds about 90 seconds to the migration. Acceptable, or should it run as a background job after the main migration completes?",
-        "- I left feature flag auth.session_v2 OFF after migration. We can flip it next deploy or stage it through GrowthBook - your preference.",
+        "Open question - the cookie domain logic in cookieGuard.ts still hard-codes the production host. I didn't touch it because the existing tests would have needed a rewrite, but it's the obvious next thing to fix.",
         "",
-        "Reply with go/no-go plus any of the above answers, or double-Esc to let me stop and I will wait."
+        "Ready for review. Want me to open the PR or hold while you look?"
     ) -join "`n"
 
-    Capture-Case -Name "01-min-short" `
-        -Title "Agent finished - reply or dismiss" `
-        -Message "Done." `
-        -Options ""
+    $planMsg = @(
+        "Here's the plan for the dashboard refactor. I'll wait for approval before touching anything.",
+        "",
+        "1. Extract chart primitives. Pull LineChart, BarChart, SparkChart out of dashboard/widgets/ into a new charts/ package. They currently re-implement axes three different ways; one shared Axis component will replace all three.",
+        "",
+        "2. Lift the data layer. The widgets each fetch their own data with bespoke useEffect calls. I'll replace them with a single useDashboardData() hook backed by React Query, so the dashboard gets one coordinated refresh instead of nine independent ones.",
+        "",
+        "3. Consolidate the date-range picker. The picker currently lives inside OverviewWidget; I'll hoist it to DashboardShell so it controls every widget at once.",
+        "",
+        "Estimated diff: ~1,800 lines added, ~1,400 removed. No public API changes. Should I proceed?"
+    ) -join "`n"
 
-    Capture-Case -Name "02-long-message" `
-        -Title "Agent finished - reply or dismiss" `
-        -Message $long `
-        -Options ""
+    $preview1 = "## v1.42.0`n`n### Features`n- charts: add SparkChart primitive`n- auth: lease-based refresh tokens`n`n### Fixes`n- session: handle stale cookies on`n  cross-subdomain navigation"
+    $preview2 = " src/charts/index.ts          | +14 -0`n src/charts/SparkChart.tsx    | +88 -0`n src/auth/lease.ts            | +52 -3`n src/widgets/Overview.tsx     | +18 -41`n ----------------------------------------`n 4 files changed, +172 -44"
+    $preview3 = "The 1.42 release reworks how`nthe client refreshes auth tokens`nand introduces a small charts`npackage extracted from the`ndashboard widgets."
 
-    Capture-Case -Name "03-two-options" `
-        -Title "Permission needed" `
-        -Message "Run: rm -rf node_modules" `
-        -Options "Allow,Deny"
+    # ---------- 7 canonical states (mirrors design/Floating-Prompt.html) ----------
+    Capture-Case -Name "01-stop-short" `
+        -Title "Agent finished" `
+        -Message $stopShort `
+        -Placeholder "Reply to continue, or double-Esc to let Claude stop."
 
-    Capture-Case -Name "04-four-options" `
+    Capture-Case -Name "02-stop-long-scrollable" `
+        -Title "Agent finished" `
+        -Message $stopLong `
+        -Placeholder "Reply to continue, or double-Esc to let Claude stop."
+
+    Capture-Case -Name "03-q-short-3-options" `
         -Title "Agent has a question" `
-        -Message "Which date library should we use?" `
-        -Options "date-fns,Luxon,Day.js,Moment (legacy)"
+        -Message "Which approach for handling tokens that expire mid-request?" `
+        -Options "Refresh on read,Refresh on a schedule,Defer until the next request" `
+        -Mode "single" `
+        -Project "auth-service" `
+        -Placeholder "Type a custom answer..."
 
-    Capture-Case -Name "05-long-labels" `
+    Capture-Case -Name "04-q-long-queued" `
         -Title "Agent has a question" `
-        -Message "How should we handle the migration failure on row 1042?" `
-        -Options "Skip the row and continue with the rest of the batch,Roll back the whole migration and retry from scratch,Pause for manual inspection of the bad row"
+        -Message "The migration script left orphaned rows in three tables - user_sessions, device_grants, and audit_log - when it bailed on the failed batch. Which cleanup approach should I take?" `
+        -Options "Roll back the whole migration and retry from scratch.,Run the cleanup script in dry-run mode first then apply.,Leave the orphans for the nightly GC job to pick up." `
+        -Mode "single" `
+        -Project "backend-api" `
+        -Placeholder "Type a custom answer..."
 
-    Capture-Case -Name "06-message-plus-options" `
+    Capture-Case -Name "05-multi-4-options" `
+        -Title "Agent has a question" `
+        -Message "Which of these should I run before opening the PR? Pick any." `
+        -Options "Re-run the affected snapshot tests,Regenerate the OpenAPI types,Bump the changelog for the public package,Format the diff with the repo prettier config" `
+        -Mode "multi" `
+        -Placeholder "Or type a custom answer..."
+
+    Capture-Case -Name "06-preview-3-options" `
+        -Title "Agent has a question" `
+        -Message "Which diff style for the auto-generated changelog?" `
+        -Options "Conventional (grouped by type),Per-file unified diff,PR-style narrative" `
+        -Previews ($preview1 + "|" + $preview2 + "|" + $preview3) `
+        -Mode "preview" `
+        -Project "docs-site" `
+        -Placeholder "Type a custom answer..."
+
+    Capture-Case -Name "07-plan-approve" `
         -Title "Plan ready" `
-        -Message $long `
-        -Options "Approve,Request changes"
+        -Message $planMsg `
+        -Options "Approve" `
+        -Mode "approve" `
+        -Project "dashboard-refactor" `
+        -Placeholder "Or describe changes to the plan..."
 
-    Capture-Case -Name "07-huge-response" `
-        -Title "Agent finished - reply or dismiss" `
-        -Message $huge `
-        -Options ""
+    # ---------- 6 palette swatches ----------
+    foreach ($pal in @("slate", "ocean", "amber", "forest", "plum", "default")) {
+        Capture-Case -Name ("08-palette-" + $pal) `
+            -Title "Agent has a question" `
+            -Message "Pulled the spec apart and re-implemented the lease handshake. All tests pass; want me to open the PR?" `
+            -Options "Open the PR now,Hold for review,Run integration tests first" `
+            -Mode "single" `
+            -Palette $pal `
+            -Project ($pal + "-project") `
+            -Session "a1b2c3d" `
+            -Placeholder "Type a custom answer..."
+    }
 
-    Capture-Case -Name "08-huge-plus-options" `
-        -Title "Plan ready" `
-        -Message $huge `
-        -Options "Ship it,Hold for review"
+    # ---------- Interaction states ----------
+    # Hover lands on the second option (offset is approximate but within the
+    # second card given default layout: PAD=14 + first option height + gap).
+    Capture-Case -Name "09-opt-hover" `
+        -Title "Agent has a question" `
+        -Message "Which approach for handling tokens that expire mid-request?" `
+        -Options "Refresh on read,Refresh on a schedule,Defer until the next request" `
+        -Mode "single" `
+        -Project "auth-service" `
+        -HoverX 260 -HoverY 240
 }
 finally {
     $env:LOCALAPPDATA = $origLocalAppData
