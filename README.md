@@ -39,6 +39,49 @@ follows a designed style rather than the default Win32 chrome.
 
 ## Install
 
+Installs as a standard Claude Code plugin — the plugin system reads
+[`hooks.json`](hooks.json) and wires the 4 hook events automatically. No
+`settings.json` editing.
+
+Requires the Rust toolchain (get it from [rustup.rs](https://rustup.rs/) if
+missing).
+
+**Step 1** — build the binary:
+
+```powershell
+.\build.ps1
+```
+
+This runs `cargo build --release` and copies the resulting `.exe` to
+`./hooks/floating-prompt.exe`, where `${CLAUDE_PLUGIN_ROOT}` will find it
+after the plugin install.
+
+**Step 2** — install the plugin from inside Claude Code:
+
+```
+/plugin marketplace add <absolute-path-to-this-repo>
+/plugin install floating-prompt@floating-prompt-marketplace
+```
+
+The two slash commands register the local marketplace
+([`marketplace.json`](marketplace.json)) and install the plugin
+([`plugin.json`](plugin.json) + [`hooks.json`](hooks.json)). Hooks are
+hot-loaded — no Claude Code restart needed.
+
+Verify with `/hooks` and `/plugin list`.
+
+To remove: `/plugin uninstall floating-prompt@floating-prompt-marketplace`
+unwires every hook the plugin registered. Run `.\build.ps1` again any time
+to rebuild after a source change, then `/plugin update floating-prompt` (or
+reinstall) to pick up the new binary.
+
+<details>
+<summary>Manual install (no plugin system)</summary>
+
+For setups where the plugin system isn't usable (legacy installs, shared
+machines, project-scoped `settings.json`), the four hook blocks can be
+merged manually instead:
+
 ```powershell
 cargo build --release
 copy target\release\floating-prompt.exe "$env:USERPROFILE\.claude\hooks\"
@@ -46,47 +89,11 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills\floating-pr
 copy skills\floating-prompt\SKILL.md "$env:USERPROFILE\.claude\skills\floating-prompt\"
 ```
 
-Then add hook entries to `~/.claude/settings.json` (paths must be absolute
-— `$env:` doesn't expand inside JSON):
+Then merge the contents of [`settings.fragment.json`](settings.fragment.json)
+into `~/.claude/settings.json`, replacing `<you>` with your Windows
+username (`$env:` doesn't expand inside JSON).
 
-```json
-{
-  "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Stop",
-        "timeout": 3600
-      }]
-    }],
-    "PreToolUse": [{
-      "matcher": "AskUserQuestion|ExitPlanMode",
-      "hooks": [{
-        "type": "command",
-        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Question",
-        "timeout": 3600
-      }]
-    }],
-    "Notification": [{
-      "hooks": [{
-        "type": "command",
-        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Notification",
-        "timeout": 3600
-      }]
-    }],
-    "PermissionRequest": [{
-      "hooks": [{
-        "type": "command",
-        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Permission",
-        "timeout": 3600
-      }]
-    }]
-  }
-}
-```
-
-Verify with `/hooks` inside Claude Code. Settings hot-reload — no restart
-needed.
+</details>
 
 ## Usage
 
@@ -220,7 +227,11 @@ Builds against `windows` crate 0.52.
 
 ```
 main.rs                          single-file Rust binary (~5 KLOC)
-Cargo.toml                       windows 0.52 + serde_json
+Cargo.toml                       windows 0.52 + serde_json + pulldown-cmark
+plugin.json / hooks.json         Claude Code plugin manifest + hook bindings
+marketplace.json                 single-plugin marketplace declaration
+build.ps1                        cargo build + place exe at hooks/
+settings.fragment.json           hook block reference (for manual install)
 REQUIREMENTS.md                  R1-R9 spec + deferred items
 DESIGN-BRIEF.md                  historical design brief for the redesign
 skills/floating-prompt/SKILL.md  bundled /floating-prompt skill
