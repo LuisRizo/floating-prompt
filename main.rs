@@ -2802,31 +2802,14 @@ unsafe fn paint(hwnd: HWND) {
         brush.SetColor(&argb_to_color(0x10_FF_FF_FF));
         rt.DrawRoundedRectangle(&outline_rect, &brush, 1.0, None);
 
-        // ---------- Chip -----------------------------------------------------
-        let chip_rect = D2D1_ROUNDED_RECT {
-            rect: lay.chip.to_d2d(),
-            radiusX: 999.0,
-            radiusY: 999.0,
-        };
-        brush.SetColor(&argb_to_color(p.chip));
-        rt.FillRoundedRectangle(&chip_rect, &brush);
-        // The border stroke must inset half its width inside the geometric
-        // edge — otherwise D2D centers a 1px line on the boundary and AA
-        // spreads it across two pixel rows at ~50% intensity each (which
-        // is what made the chip read as a borderless oval). 0.5px inset +
-        // 1.0px stroke = one fully-saturated pixel row.
-        let chip_stroke = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: lay.chip.left + 0.5,
-                top: lay.chip.top + 0.5,
-                right: lay.chip.right - 0.5,
-                bottom: lay.chip.bottom - 0.5,
-            },
-            radiusX: 999.0,
-            radiusY: 999.0,
-        };
-        brush.SetColor(&argb_to_color(p.chip_border));
-        rt.DrawRoundedRectangle(&chip_stroke, &brush, 1.0, None);
+        // ---------- Chip (two-fill bordered rounded rectangle) -------------
+        // Two-fill technique (variant D in the pill-lab comparison): outer
+        // rect in the border color, inner rect 1 px smaller in the fill
+        // color. Pixel-perfect 1 px border regardless of DPI / subpixel
+        // alignment, which is what fixed the "just an oval" look.
+        fill_with_border(
+            &rt, &brush, lay.chip.to_d2d(), 6.0, 1.0, p.chip, p.chip_border,
+        );
 
         // Dot halo + dot
         let dot_cx = (lay.chip_dot.left + lay.chip_dot.right) / 2.0;
@@ -2915,27 +2898,11 @@ unsafe fn paint(hwnd: HWND) {
             }
         }
 
-        // ---------- Queue badge ---------------------------------------------
+        // ---------- Queue badge --------------------------------------------
         if lay.queue_badge.w() > 0.5 {
-            let badge_rect = D2D1_ROUNDED_RECT {
-                rect: lay.queue_badge.to_d2d(),
-                radiusX: 6.0,
-                radiusY: 6.0,
-            };
-            brush.SetColor(&argb_to_color(p.chip));
-            rt.FillRoundedRectangle(&badge_rect, &brush);
-            let badge_stroke = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: lay.queue_badge.left + 0.5,
-                    top: lay.queue_badge.top + 0.5,
-                    right: lay.queue_badge.right - 0.5,
-                    bottom: lay.queue_badge.bottom - 0.5,
-                },
-                radiusX: 6.0,
-                radiusY: 6.0,
-            };
-            brush.SetColor(&argb_to_color(p.chip_border));
-            rt.DrawRoundedRectangle(&badge_stroke, &brush, 1.0, None);
+            fill_with_border(
+                &rt, &brush, lay.queue_badge.to_d2d(), 6.0, 1.0, p.chip, p.chip_border,
+            );
             let counter = state.last_counter.borrow().clone();
             if let Some(fmt) = state.fmt_badge.borrow().as_ref() {
                 if let Some(layout) = make_text_layout(
@@ -3148,32 +3115,16 @@ unsafe fn paint_options(
             _ => {}
         }
 
-        // Background
-        let bg = if is_hover { p.option_hover } else { p.option_bg };
-        brush.SetColor(&argb_to_color(bg));
-        rt.FillRoundedRectangle(&rr, brush);
-
-        // Border / focus ring
-        if is_focus {
-            // Soft halo
-            let halo = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: r.left - 2.0,
-                    top: r.top - 2.0,
-                    right: r.right + 2.0,
-                    bottom: r.bottom + 2.0,
-                },
-                radiusX: OPT_RADIUS + 2.0,
-                radiusY: OPT_RADIUS + 2.0,
-            };
-            brush.SetColor(&argb_to_color(p.accent_soft));
-            rt.DrawRoundedRectangle(&halo, brush, 3.0, None);
-            brush.SetColor(&argb_to_color(p.accent));
-            rt.DrawRoundedRectangle(&rr, brush, 1.0, None);
+        // Bordered fill (two-fill technique). Focused = accent border at
+        // 2 px so it pops clearly; hover swaps the inner fill to the
+        // option_hover tone.
+        let fill = if is_hover { p.option_hover } else { p.option_bg };
+        let (border_w, border_color) = if is_focus {
+            (2.0, p.accent)
         } else {
-            brush.SetColor(&argb_to_color(p.option_border));
-            rt.DrawRoundedRectangle(&rr, brush, 1.5, None);
-        }
+            (1.0, p.option_border)
+        };
+        fill_with_border(rt, brush, r.to_d2d(), OPT_RADIUS, border_w, fill, border_color);
 
         // Inner content
         match state.mode {
@@ -3275,6 +3226,42 @@ unsafe fn paint_options(
     }
 }
 
+/// Draws a bordered rounded rectangle using the two-fill technique:
+/// outer rect filled in `border_argb`, inner rect (inset by `border_w` on
+/// every side, radius reduced to match) filled in `fill_argb`. No stroke
+/// involved — the visible border is the ring left between the two fills,
+/// so it's pixel-perfect regardless of subpixel position or DPI.
+unsafe fn fill_with_border(
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    rect: D2D_RECT_F,
+    radius: f32,
+    border_w: f32,
+    fill_argb: u32,
+    border_argb: u32,
+) {
+    brush.SetColor(&argb_to_color(border_argb));
+    let outer = D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
+    };
+    rt.FillRoundedRectangle(&outer, brush);
+    let inner_rect = D2D_RECT_F {
+        left: rect.left + border_w,
+        top: rect.top + border_w,
+        right: rect.right - border_w,
+        bottom: rect.bottom - border_w,
+    };
+    let inner = D2D1_ROUNDED_RECT {
+        rect: inner_rect,
+        radiusX: (radius - border_w).max(0.0),
+        radiusY: (radius - border_w).max(0.0),
+    };
+    brush.SetColor(&argb_to_color(fill_argb));
+    rt.FillRoundedRectangle(&inner, brush);
+}
+
 unsafe fn paint_input(
     rt: &ID2D1RenderTarget,
     brush: &ID2D1SolidColorBrush,
@@ -3283,25 +3270,16 @@ unsafe fn paint_input(
 ) {
     let p = state.palette;
 
-    // Fill the input background ourselves (no more EDIT child to do it).
-    let input_rrect = D2D1_ROUNDED_RECT {
-        rect: lay.input.to_d2d(),
-        radiusX: INPUT_RADIUS,
-        radiusY: INPUT_RADIUS,
-    };
-    brush.SetColor(&argb_to_color(p.input_bg));
-    rt.FillRoundedRectangle(&input_rrect, brush);
-
-    // Border — slightly thicker so the input reads as a discrete element.
-    // When the input is logically focused we use the accent color for a
-    // subtle "you're typing here" cue.
-    let border_color = if state.input_focused.get() {
-        p.accent
+    // Two-fill bordered input field. Focused = accent border at 2 px;
+    // unfocused = input_border at 1 px.
+    let (border_w, border_color) = if state.input_focused.get() {
+        (2.0, p.accent)
     } else {
-        p.input_border
+        (1.0, p.input_border)
     };
-    brush.SetColor(&argb_to_color(border_color));
-    rt.DrawRoundedRectangle(&input_rrect, brush, 1.5, None);
+    fill_with_border(
+        rt, brush, lay.input.to_d2d(), INPUT_RADIUS, border_w, p.input_bg, border_color,
+    );
 
     // Inner text rect (where text/caret render). Clip to it so very long
     // single-line text doesn't escape the rounded corners.
@@ -3530,15 +3508,12 @@ unsafe fn paint_pip(
         radiusY: 4.0,
     };
     if is_armed {
+        // Solid accent fill — no separate border needed since fill IS
+        // the visible color.
         brush.SetColor(&argb_to_color(p.accent));
         rt.FillRoundedRectangle(&rr, brush);
-        brush.SetColor(&argb_to_color(p.accent));
-        rt.DrawRoundedRectangle(&rr, brush, 1.0, None);
     } else {
-        brush.SetColor(&argb_to_color(p.chip));
-        rt.FillRoundedRectangle(&rr, brush);
-        brush.SetColor(&argb_to_color(p.chip_border));
-        rt.DrawRoundedRectangle(&rr, brush, 1.0, None);
+        fill_with_border(rt, brush, rect, 4.0, 1.0, p.chip, p.chip_border);
     }
     // bottom shadow line (the design uses border-bottom-width:2 to evoke a key)
     let bottom_line_y = rect.bottom - 1.0;
