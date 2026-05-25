@@ -159,18 +159,47 @@ The dismiss UX is both a keyboard legend AND a clickable target.
 - R8.5: The double-Esc keyboard hook (R1) is still global / focus-
   independent.
 
+## R10 — Markdown rendering in the message body (NEW)
+
+The message body renders a CommonMark subset rather than raw text. Parsing is
+done by `pulldown-cmark` (default features off); style application is via
+per-range `IDWriteTextLayout::SetFontWeight` / `SetFontStyle` /
+`SetFontFamilyName`. Code backgrounds are painted as filled rects under the
+glyphs using `HitTestTextRange`.
+
+- R10.1: **Inline styling** — `**bold**`, `*italic*`, `_italic_`, and
+  `` `inline code` `` are rendered with the corresponding font weight, style,
+  and family (Cascadia Mono for inline code). Syntax characters are stripped
+  from the rendered text.
+- R10.2: **Fenced code blocks** (``` ``` ```) render in Cascadia Mono with the
+  palette's `code_bg` slot painted full-width on each line.
+- R10.3: **Headings** (`#`, `##`, …) render as bold lines. Their text is
+  preserved; the `#` markers are stripped.
+- R10.4: **Lists** (`-`, `*`, `1.`) render with a `• ` prefix per item;
+  numbering is dropped (out of scope for this pass).
+- R10.5: **Horizontal rules** (`---`) render as a thin Unicode divider.
+- R10.6: **Soft breaks** become a single space (CommonMark behavior). Hard
+  breaks become `\n`. Paragraph breaks become a blank line.
+- R10.7: **Out of scope (passthrough — inner text only, no styling):** links
+  (URL dropped), images, blockquotes, tables, footnotes, raw HTML (dropped).
+- R10.8: **Offsets are UTF-16 code units** to match DirectWrite's index
+  space. Adapter tests verify supplementary characters (e.g. emoji).
+- R10.9: The parsed `StyledText` is cached on `WindowState` at launch — the
+  message never changes after, so per-`WM_PAINT` reparsing would be wasted
+  work. The layout itself is rebuilt per measurement / paint because it
+  depends on width.
+
+Replaces deferred item D2 below.
+
 ## Deferred (planned, not yet specified)
 
 These are intended future features. Captured here so they aren't lost, but
 explicitly **out of scope for the current milestone**. Each will get its own
 R-section with acceptance criteria when picked up.
 
-- **D2 — Markdown / code rendering in the message body.** Today the message is
-  drawn as a single wrapped text block. Need to render fenced code blocks
-  (monospace, background tint) and basic inline markdown (bold, italic, inline
-  `code`). Likely requires moving from raw `DrawTextW` to a richer control
-  (RichEdit or Direct2D/DirectWrite). Affects `compute_window_size` /
-  `measure_message_height`.
+- ~~**D2 — Markdown / code rendering in the message body.**~~ Shipped — see
+  R10. Markdown subset (bold, italic, inline code, fenced code, headings,
+  lists, rules) renders via pulldown-cmark + per-range IDWriteTextLayout.
 
 - **D3 (PARTIAL) — Numeric quick-select for options.** The `1.` / `2.` /
   `3.` prefix on Single / Preview options is now rendered (visual cue

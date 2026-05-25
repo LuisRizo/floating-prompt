@@ -79,6 +79,9 @@ struct Palette {
     title: u32,
     dim: u32,
     scroll_thumb: u32,
+    /// Subtle inset tint behind inline `code` and fenced code blocks. Sits a
+    /// step darker than `panel` so code reads as recessed inside the message.
+    code_bg: u32,
 }
 
 // Colors are 0xAARRGGBB. accent_soft uses alpha; everything else opaque.
@@ -107,6 +110,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_F2_F4_F7,
         dim: 0xFF_7A_81_8C,
         scroll_thumb: 0xFF_3A_41_4C,
+        code_bg: 0xFF_16_1A_20,
     },
     Palette {
         name: "ocean",
@@ -126,6 +130,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_EB_F2_F7,
         dim: 0xFF_6A_80_94,
         scroll_thumb: 0xFF_2C_42_58,
+        code_bg: 0xFF_0C_18_25,
     },
     Palette {
         name: "amber",
@@ -145,6 +150,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_F5_ED_E0,
         dim: 0xFF_85_7B_6B,
         scroll_thumb: 0xFF_3D_33_28,
+        code_bg: 0xFF_1A_14_10,
     },
     Palette {
         name: "forest",
@@ -164,6 +170,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_EB_F2_EB,
         dim: 0xFF_74_83_78,
         scroll_thumb: 0xFF_2F_3A_33,
+        code_bg: 0xFF_10_16_12,
     },
     Palette {
         name: "plum",
@@ -183,6 +190,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_F0_E8_F5,
         dim: 0xFF_85_78_90,
         scroll_thumb: 0xFF_3A_2F_48,
+        code_bg: 0xFF_18_12_22,
     },
     Palette {
         name: "default",
@@ -202,6 +210,7 @@ const PALETTES: &[Palette] = &[
         title: 0xFF_F5_F5_F7,
         dim: 0xFF_82_82_86,
         scroll_thumb: 0xFF_3A_3A_40,
+        code_bg: 0xFF_13_13_15,
     },
 ];
 
@@ -224,6 +233,222 @@ fn argb_to_color(argb: u32) -> D2D1_COLOR_F {
     let g = ((argb >> 8) & 0xFF) as f32 / 255.0;
     let b = (argb & 0xFF) as f32 / 255.0;
     D2D1_COLOR_F { r, g, b, a }
+}
+
+// ===========================================================================
+// Markdown adapter — pulldown-cmark events -> styled text + spans.
+//
+// Subset rendered as styled: **bold**, *italic*/_italic_, `inline code`,
+// fenced ```code blocks```, headings (rendered as bold lines), and `---`
+// rules. List items get a `• ` prefix. Everything else (links, images,
+// blockquotes, tables, etc.) passes through with its inner text plain.
+//
+// All offsets are UTF-16 code units because that's the index space
+// IDWriteTextLayout uses for SetFontWeight / SetFontStyle / SetFontFamilyName
+// and HitTestTextRange.
+// ===========================================================================
+mod markdown {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Style {
+        Bold,
+        Italic,
+        InlineCode,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Span {
+        pub start: u32,
+        pub len: u32,
+        pub style: Style,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CodeBlock {
+        pub start: u32,
+        pub len: u32,
+    }
+
+    #[derive(Debug, Default, Clone)]
+    pub struct StyledText {
+        pub text: String,
+        pub spans: Vec<Span>,
+        pub code_blocks: Vec<CodeBlock>,
+    }
+
+    fn utf16_len(s: &str) -> u32 {
+        s.encode_utf16().count() as u32
+    }
+
+    fn append(out: &mut StyledText, pos: &mut u32, s: &str) {
+        out.text.push_str(s);
+        *pos += utf16_len(s);
+    }
+
+    fn ensure_newline(out: &mut StyledText, pos: &mut u32) {
+        if !out.text.is_empty() && !out.text.ends_with('\n') {
+            append(out, pos, "\n");
+        }
+    }
+
+    fn ensure_blank_line(out: &mut StyledText, pos: &mut u32) {
+        if out.text.is_empty() {
+            return;
+        }
+        if out.text.ends_with("\n\n") {
+            return;
+        }
+        if out.text.ends_with('\n') {
+            append(out, pos, "\n");
+        } else {
+            append(out, pos, "\n\n");
+        }
+    }
+
+    pub fn parse(input: &str) -> StyledText {
+        let mut out = StyledText::default();
+        let mut pos: u32 = 0;
+        let mut bold_starts: Vec<u32> = Vec::new();
+        let mut italic_starts: Vec<u32> = Vec::new();
+        let mut code_block_start: Option<u32> = None;
+        let mut in_code_block = false;
+        let mut list_depth: u32 = 0;
+        let mut just_started_item = false;
+
+        for event in Parser::new_ext(input, Options::empty()) {
+            match event {
+                Event::Start(Tag::Strong) => bold_starts.push(pos),
+                Event::End(TagEnd::Strong) => {
+                    if let Some(start) = bold_starts.pop() {
+                        if pos > start {
+                            out.spans.push(Span {
+                                start,
+                                len: pos - start,
+                                style: Style::Bold,
+                            });
+                        }
+                    }
+                }
+                Event::Start(Tag::Emphasis) => italic_starts.push(pos),
+                Event::End(TagEnd::Emphasis) => {
+                    if let Some(start) = italic_starts.pop() {
+                        if pos > start {
+                            out.spans.push(Span {
+                                start,
+                                len: pos - start,
+                                style: Style::Italic,
+                            });
+                        }
+                    }
+                }
+                Event::Code(s) => {
+                    let start = pos;
+                    append(&mut out, &mut pos, &s);
+                    if pos > start {
+                        out.spans.push(Span {
+                            start,
+                            len: pos - start,
+                            style: Style::InlineCode,
+                        });
+                    }
+                }
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_)))
+                | Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
+                    ensure_blank_line(&mut out, &mut pos);
+                    code_block_start = Some(pos);
+                    in_code_block = true;
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(start) = code_block_start.take() {
+                        // pulldown-cmark always appends a trailing '\n' to the
+                        // last text event in a code block. Trim that from the
+                        // span so the bg rect doesn't extend below the text.
+                        let mut end = pos;
+                        if out.text.ends_with('\n') {
+                            end = end.saturating_sub(1);
+                        }
+                        if end > start {
+                            out.code_blocks.push(CodeBlock {
+                                start,
+                                len: end - start,
+                            });
+                        }
+                    }
+                    in_code_block = false;
+                }
+                Event::Text(s) => {
+                    append(&mut out, &mut pos, &s);
+                    if just_started_item {
+                        just_started_item = false;
+                    }
+                }
+                Event::SoftBreak => {
+                    if in_code_block {
+                        append(&mut out, &mut pos, "\n");
+                    } else {
+                        append(&mut out, &mut pos, " ");
+                    }
+                }
+                Event::HardBreak => append(&mut out, &mut pos, "\n"),
+                Event::Rule => {
+                    ensure_blank_line(&mut out, &mut pos);
+                    append(&mut out, &mut pos, "────────");
+                    ensure_blank_line(&mut out, &mut pos);
+                }
+                Event::Start(Tag::Paragraph) => {
+                    if just_started_item || list_depth > 0 {
+                        // Inside a list item: no paragraph spacing — the `• `
+                        // prefix already positioned us. Multi-paragraph items
+                        // get a single newline at most.
+                        if list_depth > 0 && !out.text.is_empty() && !out.text.ends_with('\n') {
+                            append(&mut out, &mut pos, "\n");
+                        }
+                    } else {
+                        ensure_blank_line(&mut out, &mut pos);
+                    }
+                }
+                Event::End(TagEnd::Paragraph) => {}
+                Event::Start(Tag::Heading { .. }) => {
+                    ensure_blank_line(&mut out, &mut pos);
+                    bold_starts.push(pos);
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some(start) = bold_starts.pop() {
+                        if pos > start {
+                            out.spans.push(Span {
+                                start,
+                                len: pos - start,
+                                style: Style::Bold,
+                            });
+                        }
+                    }
+                }
+                Event::Start(Tag::List(_)) => {
+                    list_depth = list_depth.saturating_add(1);
+                    ensure_newline(&mut out, &mut pos);
+                }
+                Event::End(TagEnd::List(_)) => {
+                    list_depth = list_depth.saturating_sub(1);
+                }
+                Event::Start(Tag::Item) => {
+                    ensure_newline(&mut out, &mut pos);
+                    append(&mut out, &mut pos, "• ");
+                    just_started_item = true;
+                }
+                Event::End(TagEnd::Item) => {}
+                // Drop raw HTML — Claude rarely emits it and rendering it as
+                // plain text would expose tags to the user.
+                Event::Html(_) | Event::InlineHtml(_) => {}
+                // Everything else (Link, Image, BlockQuote, Table, etc.):
+                // no-op on the tag itself; the inner Text events still flow
+                // through and get rendered plain.
+                _ => {}
+            }
+        }
+
+        out
+    }
 }
 
 // ===========================================================================
@@ -317,6 +542,13 @@ enum HookEvent {
     Stop,
     Question,
     Gate,
+    Notification,
+    /// Claude Code's `PermissionRequest` event — fires only when auto-mode
+    /// can't decide and the user would otherwise see the built-in permission
+    /// prompt. Same UX as Gate (Allow / Deny / free text), but the output
+    /// schema differs (`hookSpecificOutput.decision.behavior` instead of
+    /// `permissionDecision`, no reason field) — see `build_decision_json`.
+    Permission,
 }
 
 enum Mode {
@@ -334,6 +566,8 @@ fn parse_mode() -> Mode {
                 "Stop" => HookEvent::Stop,
                 "Question" => HookEvent::Question,
                 "Gate" => HookEvent::Gate,
+                "Notification" => HookEvent::Notification,
+                "Permission" | "PermissionRequest" => HookEvent::Permission,
                 _ => HookEvent::Stop,
             };
             return Mode::Hook(event);
@@ -395,6 +629,8 @@ fn derive_args(event: HookEvent, payload: &serde_json::Value) -> Args {
         HookEvent::Stop => "Stop".into(),
         HookEvent::Question => "Question".into(),
         HookEvent::Gate => "Gate".into(),
+        HookEvent::Notification => "Notification".into(),
+        HookEvent::Permission => "Permission".into(),
     };
 
     if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) {
@@ -484,8 +720,13 @@ fn derive_args(event: HookEvent, payload: &serde_json::Value) -> Args {
                 }
             }
         }
-        HookEvent::Gate => {
+        HookEvent::Gate | HookEvent::Permission => {
             a.title = "Permission needed".into();
+            // For Gate (PreToolUse), free-text becomes the deny reason that
+            // Claude reads back. For Permission (PermissionRequest), the
+            // output schema has no reason field — typed text is dropped, only
+            // the Allow/Deny decision survives. Same popup either way; the
+            // difference is in build_decision_json.
             a.placeholder = "Type a reason…".into();
             if let Some(cmd) = payload.pointer("/tool_input/command").and_then(|v| v.as_str()) {
                 a.message = format!("Run: {}", cmd);
@@ -495,6 +736,21 @@ fn derive_args(event: HookEvent, payload: &serde_json::Value) -> Args {
                 a.message = "Claude wants to run a tool.".into();
             }
             a.options = vec!["Allow".into(), "Deny".into()];
+        }
+        HookEvent::Notification => {
+            // Claude Code fires Notification when it needs the user's attention
+            // — most commonly a permission prompt that auto-mode can't decide,
+            // or an idle-waiting alert (~60s). The payload carries a single
+            // `message` string. Our popup surfaces it; we don't influence the
+            // notification itself (always exit 0 with no decision JSON).
+            a.title = "Claude needs attention".into();
+            a.placeholder = "Press Esc Esc or Dismiss to acknowledge.".into();
+            a.message = payload
+                .get("message")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Claude is waiting for you.")
+                .to_string();
         }
     }
     a
@@ -551,6 +807,13 @@ fn should_skip_gate(payload: &serde_json::Value) -> bool {
 }
 
 fn build_decision_json(event: HookEvent, outcome: &Outcome) -> Option<serde_json::Value> {
+    // Notification is informational — the popup is just a richer surface for
+    // Claude Code's "needs attention" signal. We never alter the underlying
+    // notification (no JSON output, exit 0), regardless of whether the user
+    // dismissed or typed something.
+    if matches!(event, HookEvent::Notification) {
+        return None;
+    }
     let answer = match outcome {
         Outcome::Answered(t) => t.trim().to_string(),
         Outcome::Dismissed => return None,
@@ -584,6 +847,21 @@ fn build_decision_json(event: HookEvent, outcome: &Outcome) -> Option<serde_json
                 "permissionDecisionReason": answer
             }
         }),
+        HookEvent::Permission => {
+            // PermissionRequest output schema (distinct from PreToolUse):
+            //   hookSpecificOutput.decision is an OBJECT with `behavior`,
+            //   not a string. There is no reason field — free-text answers
+            //   collapse to `deny` and the text is dropped (Claude Code
+            //   doesn't carry it through).
+            let behavior = if answer == "Allow" { "allow" } else { "deny" };
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": behavior }
+                }
+            })
+        }
+        HookEvent::Notification => unreachable!("handled by early return above"),
     })
 }
 
@@ -1345,6 +1623,110 @@ unsafe fn measure_layout_width(layout: &IDWriteTextLayout) -> f32 {
     m.widthIncludingTrailingWhitespace.max(m.width)
 }
 
+/// Build a text layout from already-parsed markdown and apply per-range
+/// font weight / style / family so bold / italic / code render correctly.
+/// The caller still owns the `StyledText` and uses its `code_blocks` / inline
+/// `spans` to paint backgrounds (offsets are UTF-16, matching DirectWrite).
+///
+/// Mono ranges keep `format`'s point size — Cascadia Mono at the body size
+/// has slightly different metrics than Segoe UI, so the line containing code
+/// may be a couple px taller. We accept that — it's better than introducing a
+/// font-size mismatch that disrupts baselines.
+unsafe fn make_styled_layout(
+    parsed: &markdown::StyledText,
+    format: &IDWriteTextFormat,
+    max_w: f32,
+    max_h: f32,
+) -> Option<IDWriteTextLayout> {
+    let layout = make_text_layout(&parsed.text, format, max_w, max_h)?;
+    apply_markdown_styles(&layout, parsed);
+    Some(layout)
+}
+
+unsafe fn apply_markdown_styles(layout: &IDWriteTextLayout, parsed: &markdown::StyledText) {
+    let mono_family = wide("Cascadia Mono");
+    let mono_pcwstr = PCWSTR(mono_family.as_ptr());
+
+    for span in &parsed.spans {
+        let range = DWRITE_TEXT_RANGE {
+            startPosition: span.start,
+            length: span.len,
+        };
+        match span.style {
+            markdown::Style::Bold => {
+                let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range);
+            }
+            markdown::Style::Italic => {
+                let _ = layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range);
+            }
+            markdown::Style::InlineCode => {
+                let _ = layout.SetFontFamilyName(mono_pcwstr, range);
+            }
+        }
+    }
+
+    for cb in &parsed.code_blocks {
+        let range = DWRITE_TEXT_RANGE {
+            startPosition: cb.start,
+            length: cb.len,
+        };
+        let _ = layout.SetFontFamilyName(mono_pcwstr, range);
+    }
+}
+
+/// Paint a tinted background behind a UTF-16 range of glyphs in `layout`.
+/// Two flavors: inline (snug to glyph extent, `full_width_*` = None) and
+/// block (each line extended to `[full_width_left, full_width_right]`,
+/// pass Some). `h_pad` / `v_pad` widen the rect on each side after width
+/// computation — inline code gets a couple px horizontal breathing room.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_text_range_bg(
+    rt: &ID2D1RenderTarget,
+    layout: &IDWriteTextLayout,
+    brush: &ID2D1SolidColorBrush,
+    start: u32,
+    length: u32,
+    origin_x: f32,
+    origin_y: f32,
+    full_width_left: Option<f32>,
+    full_width_right: Option<f32>,
+    h_pad: f32,
+    v_pad: f32,
+) {
+    if length == 0 {
+        return;
+    }
+    // Two-call pattern: probe for required count, then allocate + fetch.
+    let mut count: u32 = 0;
+    let _ = layout.HitTestTextRange(start, length, origin_x, origin_y, None, &mut count);
+    if count == 0 {
+        return;
+    }
+    let mut metrics = vec![DWRITE_HIT_TEST_METRICS::default(); count as usize];
+    let mut actual: u32 = 0;
+    let _ = layout.HitTestTextRange(
+        start,
+        length,
+        origin_x,
+        origin_y,
+        Some(&mut metrics),
+        &mut actual,
+    );
+    for m in &metrics[..actual as usize] {
+        let (left, right) = match (full_width_left, full_width_right) {
+            (Some(l), Some(r)) => (l, r),
+            _ => (m.left - h_pad, m.left + m.width + h_pad),
+        };
+        let r = D2D_RECT_F {
+            left,
+            top: m.top - v_pad,
+            right,
+            bottom: m.top + m.height + v_pad,
+        };
+        rt.FillRectangle(&r, brush);
+    }
+}
+
 // ===========================================================================
 // WindowState
 // ===========================================================================
@@ -1352,6 +1734,11 @@ struct WindowState {
     args: Args,
     palette: &'static Palette,
     mode: OptionMode,
+
+    /// Markdown-parsed message body, computed once from `args.message`. Used
+    /// for both measurement (compute_window_size) and paint. Recomputing per
+    /// WM_PAINT would be cheap, but the message never changes after launch.
+    parsed_message: markdown::StyledText,
 
     req_path: PathBuf,
     outcome: RefCell<Option<Outcome>>,
@@ -1772,7 +2159,7 @@ fn layout_window(client_w: i32, client_h: i32, state: &WindowState) -> Layout {
     let msg_text_w = lay.message_text.w();
     let full_h = unsafe {
         if let Some(fmt) = state.fmt_body.borrow().as_ref() {
-            make_text_layout(&state.args.message, fmt, msg_text_w, 99999.0)
+            make_styled_layout(&state.parsed_message, fmt, msg_text_w, 99999.0)
                 .map(|l| measure_layout_height(&l))
                 .unwrap_or(0.0)
         } else {
@@ -2937,18 +3324,59 @@ unsafe fn paint(hwnd: HWND) {
         // Clip text to the message text area
         rt.PushAxisAlignedClip(&lay.message_text.to_d2d(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         if let Some(fmt) = state.fmt_body.borrow().as_ref() {
-            if let Some(layout) = make_text_layout(
-                &state.args.message,
+            if let Some(layout) = make_styled_layout(
+                &state.parsed_message,
                 fmt,
                 lay.message_text.w(),
                 99999.0,
             ) {
+                let origin_x = lay.message_text.left;
+                let origin_y = lay.message_text.top - state.scroll_y.get();
+
+                // Paint code backgrounds BEFORE the text so glyphs sit on
+                // top of the tint. Inline code: snug to the glyph extent.
+                // Fenced blocks: extend each line to the full message
+                // width so the block reads as a continuous panel.
+                let parsed = &state.parsed_message;
+                if !parsed.spans.is_empty() || !parsed.code_blocks.is_empty() {
+                    brush.SetColor(&argb_to_color(p.code_bg));
+                    for span in &parsed.spans {
+                        if span.style == markdown::Style::InlineCode {
+                            paint_text_range_bg(
+                                &rt,
+                                &layout,
+                                &brush,
+                                span.start,
+                                span.len,
+                                origin_x,
+                                origin_y,
+                                /* full_width_left */ None,
+                                /* full_width_right */ None,
+                                /* h_pad */ 2.0,
+                                /* v_pad */ 0.0,
+                            );
+                        }
+                    }
+                    for cb in &parsed.code_blocks {
+                        paint_text_range_bg(
+                            &rt,
+                            &layout,
+                            &brush,
+                            cb.start,
+                            cb.len,
+                            origin_x,
+                            origin_y,
+                            Some(lay.message_text.left),
+                            Some(lay.message_text.right),
+                            /* h_pad */ 0.0,
+                            /* v_pad */ 2.0,
+                        );
+                    }
+                }
+
                 brush.SetColor(&argb_to_color(p.body));
                 rt.DrawTextLayout(
-                    D2D_POINT_2F {
-                        x: lay.message_text.left,
-                        y: lay.message_text.top - state.scroll_y.get(),
-                    },
+                    D2D_POINT_2F { x: origin_x, y: origin_y },
                     &layout,
                     &brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -3617,10 +4045,13 @@ fn run_window(args: Args) -> Outcome {
 
     let initial_selected = vec![false; args.options.len()];
 
+    let parsed_message = markdown::parse(&args.message);
+
     let state = Box::into_raw(Box::new(WindowState {
         args: args.clone(),
         palette,
         mode,
+        parsed_message,
         req_path: req_path.clone(),
         outcome: RefCell::new(None),
         is_head_shown: Cell::new(false),
@@ -4175,6 +4606,121 @@ mod tests {
         assert_eq!(pr.and_then(|v| v.as_str()), Some("A\nB\nC"));
     }
 
+    // ---- Notification ----
+    #[test]
+    fn derive_notification_uses_payload_message() {
+        let p = serde_json::json!({
+            "hook_event_name": "Notification",
+            "message": "Claude needs your permission to use Bash"
+        });
+        let a = derive_args(HookEvent::Notification, &p);
+        assert_eq!(a.event, "Notification");
+        assert_eq!(a.title, "Claude needs attention");
+        assert_eq!(a.message, "Claude needs your permission to use Bash");
+        assert!(a.options.is_empty());
+    }
+
+    #[test]
+    fn derive_notification_falls_back_when_message_missing() {
+        let p = serde_json::json!({});
+        let a = derive_args(HookEvent::Notification, &p);
+        assert!(!a.message.trim().is_empty(), "fallback message expected");
+    }
+
+    #[test]
+    fn derive_notification_falls_back_when_message_whitespace() {
+        let p = serde_json::json!({"message": "   "});
+        let a = derive_args(HookEvent::Notification, &p);
+        assert!(!a.message.trim().is_empty(), "fallback message expected");
+    }
+
+    #[test]
+    fn decision_notification_is_always_none_dismiss() {
+        let d = build_decision_json(HookEvent::Notification, &Outcome::Dismissed);
+        assert!(d.is_none());
+    }
+
+    #[test]
+    fn decision_notification_is_always_none_even_with_reply() {
+        // Notification is informational — typed text must NOT influence the
+        // underlying Claude Code notification flow.
+        let d = build_decision_json(
+            HookEvent::Notification,
+            &Outcome::Answered("ignore me".into()),
+        );
+        assert!(d.is_none());
+    }
+
+    // ---- PermissionRequest ----
+    #[test]
+    fn derive_permission_shows_command_like_gate() {
+        let p = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf node_modules"}
+        });
+        let a = derive_args(HookEvent::Permission, &p);
+        assert_eq!(a.event, "Permission");
+        assert_eq!(a.title, "Permission needed");
+        assert_eq!(a.message, "Run: rm -rf node_modules");
+        assert_eq!(a.options, vec!["Allow".to_string(), "Deny".to_string()]);
+    }
+
+    #[test]
+    fn derive_permission_falls_back_to_tool_name() {
+        let p = serde_json::json!({"tool_name": "Write"});
+        let a = derive_args(HookEvent::Permission, &p);
+        assert_eq!(a.message, "Allow Write?");
+    }
+
+    #[test]
+    fn decision_permission_allow_uses_decision_object() {
+        let d = build_decision_json(HookEvent::Permission, &Outcome::Answered("Allow".into()))
+            .unwrap();
+        let evt = d.pointer("/hookSpecificOutput/hookEventName");
+        assert_eq!(evt.and_then(|v| v.as_str()), Some("PermissionRequest"));
+        let behavior = d.pointer("/hookSpecificOutput/decision/behavior");
+        assert_eq!(behavior.and_then(|v| v.as_str()), Some("allow"));
+        // Critical: no reason field anywhere on decision.
+        assert!(d.pointer("/hookSpecificOutput/decision/reason").is_none());
+        assert!(d
+            .pointer("/hookSpecificOutput/permissionDecisionReason")
+            .is_none());
+    }
+
+    #[test]
+    fn decision_permission_deny_uses_decision_object() {
+        let d = build_decision_json(HookEvent::Permission, &Outcome::Answered("Deny".into()))
+            .unwrap();
+        let behavior = d.pointer("/hookSpecificOutput/decision/behavior");
+        assert_eq!(behavior.and_then(|v| v.as_str()), Some("deny"));
+    }
+
+    #[test]
+    fn decision_permission_free_text_collapses_to_deny() {
+        // PermissionRequest has no reason field — any non-Allow answer becomes
+        // a plain `deny` and the text is dropped. The user's reasoning does
+        // NOT reach Claude (this is a known limitation of the upstream schema).
+        let d = build_decision_json(
+            HookEvent::Permission,
+            &Outcome::Answered("not safe right now".into()),
+        )
+        .unwrap();
+        let behavior = d.pointer("/hookSpecificOutput/decision/behavior");
+        assert_eq!(behavior.and_then(|v| v.as_str()), Some("deny"));
+        let dump = serde_json::to_string(&d).unwrap();
+        assert!(
+            !dump.contains("not safe right now"),
+            "free-text reason must not leak into Permission output: {}",
+            dump
+        );
+    }
+
+    #[test]
+    fn decision_permission_dismiss_is_none() {
+        let d = build_decision_json(HookEvent::Permission, &Outcome::Dismissed);
+        assert!(d.is_none());
+    }
+
     // ---- tail_last_text ----
     #[test]
     fn tail_returns_none_for_missing_file() {
@@ -4330,5 +4876,152 @@ mod tests {
             "some-project"
         );
         assert_eq!(project_from_cwd("/home/dev/another"), "another");
+    }
+
+    // ---- markdown adapter ----
+    use crate::markdown::{self, Style};
+
+    fn span_at<'a>(out: &'a markdown::StyledText, style: Style) -> &'a markdown::Span {
+        out.spans
+            .iter()
+            .find(|s| s.style == style)
+            .unwrap_or_else(|| panic!("no span with style {:?} in {:?}", style, out.spans))
+    }
+
+    fn substr_utf16(text: &str, start: u32, len: u32) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        String::from_utf16_lossy(&units[start as usize..(start + len) as usize])
+    }
+
+    #[test]
+    fn markdown_plain_text_is_unchanged() {
+        let out = markdown::parse("just plain text");
+        assert_eq!(out.text, "just plain text");
+        assert!(out.spans.is_empty());
+        assert!(out.code_blocks.is_empty());
+    }
+
+    #[test]
+    fn markdown_bold_strips_syntax_and_records_span() {
+        let out = markdown::parse("hello **world** end");
+        assert_eq!(out.text, "hello world end");
+        let s = span_at(&out, Style::Bold);
+        assert_eq!(substr_utf16(&out.text, s.start, s.len), "world");
+    }
+
+    #[test]
+    fn markdown_italic_supports_both_markers() {
+        let star = markdown::parse("a *one* b");
+        assert_eq!(star.text, "a one b");
+        let s = span_at(&star, Style::Italic);
+        assert_eq!(substr_utf16(&star.text, s.start, s.len), "one");
+
+        let under = markdown::parse("a _one_ b");
+        assert_eq!(under.text, "a one b");
+        let s = span_at(&under, Style::Italic);
+        assert_eq!(substr_utf16(&under.text, s.start, s.len), "one");
+    }
+
+    #[test]
+    fn markdown_inline_code_records_span_without_backticks() {
+        let out = markdown::parse("use `foo()` here");
+        assert_eq!(out.text, "use foo() here");
+        let s = span_at(&out, Style::InlineCode);
+        assert_eq!(substr_utf16(&out.text, s.start, s.len), "foo()");
+    }
+
+    #[test]
+    fn markdown_fenced_code_block_records_range() {
+        let out = markdown::parse("intro\n\n```\nfn main() {}\n```\n\nafter");
+        assert!(out.text.contains("fn main() {}"));
+        assert!(out.text.contains("intro"));
+        assert!(out.text.contains("after"));
+        assert!(!out.text.contains("```"));
+        assert_eq!(out.code_blocks.len(), 1);
+        let cb = out.code_blocks[0];
+        assert_eq!(substr_utf16(&out.text, cb.start, cb.len), "fn main() {}");
+    }
+
+    #[test]
+    fn markdown_fenced_code_block_preserves_internal_newlines() {
+        let out = markdown::parse("```\nline1\nline2\n```");
+        assert_eq!(out.code_blocks.len(), 1);
+        let cb = out.code_blocks[0];
+        assert_eq!(substr_utf16(&out.text, cb.start, cb.len), "line1\nline2");
+    }
+
+    #[test]
+    fn markdown_unbalanced_delimiters_pass_through() {
+        // pulldown-cmark treats a lone `*` as literal text.
+        let out = markdown::parse("a * b c");
+        assert_eq!(out.text, "a * b c");
+        assert!(out.spans.is_empty());
+    }
+
+    #[test]
+    fn markdown_escaped_chars_are_literal() {
+        let out = markdown::parse(r"literal \*not italic\*");
+        assert_eq!(out.text, "literal *not italic*");
+        assert!(out.spans.is_empty());
+    }
+
+    #[test]
+    fn markdown_mixed_bold_italic() {
+        let out = markdown::parse("***both***");
+        // pulldown-cmark parses *** as bold+italic nested.
+        assert_eq!(out.text, "both");
+        assert!(out.spans.iter().any(|s| s.style == Style::Bold));
+        assert!(out.spans.iter().any(|s| s.style == Style::Italic));
+    }
+
+    #[test]
+    fn markdown_paragraph_breaks_become_blank_lines() {
+        let out = markdown::parse("first\n\nsecond");
+        assert_eq!(out.text, "first\n\nsecond");
+    }
+
+    #[test]
+    fn markdown_softbreak_becomes_space() {
+        // A single \n in CommonMark is a soft break = space in output.
+        let out = markdown::parse("line one\nline two");
+        assert_eq!(out.text, "line one line two");
+    }
+
+    #[test]
+    fn markdown_list_items_get_bullet_prefix() {
+        let out = markdown::parse("- one\n- two\n- three");
+        assert!(out.text.contains("• one"));
+        assert!(out.text.contains("• two"));
+        assert!(out.text.contains("• three"));
+    }
+
+    #[test]
+    fn markdown_heading_becomes_bold_line() {
+        let out = markdown::parse("# Title\n\nbody");
+        assert!(out.text.starts_with("Title"));
+        assert!(out.text.contains("body"));
+        let s = span_at(&out, Style::Bold);
+        assert_eq!(substr_utf16(&out.text, s.start, s.len), "Title");
+    }
+
+    #[test]
+    fn markdown_link_text_passes_through_without_url() {
+        let out = markdown::parse("see [the docs](https://example.com) for more");
+        assert!(out.text.contains("the docs"));
+        assert!(out.text.contains("for more"));
+        assert!(!out.text.contains("https"));
+        assert!(!out.text.contains("]("));
+    }
+
+    #[test]
+    fn markdown_utf16_offsets_handle_supplementary_chars() {
+        // 🦀 is a supplementary character: 2 UTF-16 code units, 4 UTF-8 bytes.
+        let out = markdown::parse("**🦀 rust**");
+        assert_eq!(out.text, "🦀 rust");
+        let s = span_at(&out, Style::Bold);
+        let units: Vec<u16> = out.text.encode_utf16().collect();
+        // Span should cover all 7 UTF-16 units: 🦀 (2) + space (1) + "rust" (4)
+        assert_eq!(s.start, 0);
+        assert_eq!(s.len as usize, units.len());
     }
 }

@@ -13,7 +13,10 @@ follows a designed style rather than the default Win32 chrome.
 ## Features
 
 - **All hook events:** Stop, AskUserQuestion (single / multi / preview),
-  ExitPlanMode (Approve), and PreToolUse gates (Allow / Deny / explain).
+  ExitPlanMode (Approve), PreToolUse gates (Allow / Deny / explain),
+  PermissionRequest (the targeted "Claude needs permission for tool X"
+  signal — narrower than PreToolUse matchers, fires only when auto-mode
+  bailed), and Notification (idle-wait alerts + other catch-all signals).
 - **Multi-session queue:** concurrent Claude Code sessions queue rather
   than stack — one popup visible at a time, FIFO.
 - **Focus-independent double-Esc** via a global `WH_KEYBOARD_LL` hook —
@@ -29,6 +32,10 @@ follows a designed style rather than the default Win32 chrome.
   the first press, drain over the 600 ms window, then reset.
 - **Global on/off toggle** via `/floating-prompt off` — hooks become
   no-ops without uninstalling them or editing `settings.json`.
+- **Markdown rendering** in the message body — `**bold**`, `*italic*`,
+  `` `inline code` ``, fenced code blocks (mono + tinted bg), headings,
+  lists, and horizontal rules. Parsed with `pulldown-cmark`; styles applied
+  per-range to a single `IDWriteTextLayout`.
 
 ## Install
 
@@ -57,6 +64,20 @@ Then add hook entries to `~/.claude/settings.json` (paths must be absolute
       "hooks": [{
         "type": "command",
         "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Question",
+        "timeout": 3600
+      }]
+    }],
+    "Notification": [{
+      "hooks": [{
+        "type": "command",
+        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Notification",
+        "timeout": 3600
+      }]
+    }],
+    "PermissionRequest": [{
+      "hooks": [{
+        "type": "command",
+        "command": "C:\\Users\\<you>\\.claude\\hooks\\floating-prompt.exe --hook Permission",
         "timeout": 3600
       }]
     }]
@@ -116,25 +137,38 @@ Flags:
 
 ### Hook mode
 
-When invoked with `--hook Stop|Question|Gate`, the binary reads the Claude
-Code hook JSON from stdin, derives all args (event, message, options,
-project, session) automatically, shows the popup, and emits the appropriate
-decision JSON on stdout:
+When invoked with `--hook Stop|Question|Gate|Permission|Notification`, the
+binary reads the Claude Code hook JSON from stdin, derives all args (event,
+message, options, project, session) automatically, shows the popup, and emits
+the appropriate decision JSON on stdout:
 
 | Event | Outcome | Output |
 |---|---|---|
 | Stop | answered | `{"decision":"block","reason":"<answer>"}` (Claude gets another turn) |
 | Stop | dismissed | _no output_ (turn ends) |
 | Question | answered | `permissionDecision: deny` + the answer as the reason |
-| Gate | `Allow` | `permissionDecision: allow` |
+| Gate | `Allow` | `permissionDecision: allow` (PreToolUse output shape) |
 | Gate | `Deny` | `permissionDecision: deny` |
 | Gate | text | `permissionDecision: deny` + the text as the reason |
+| Permission | `Allow` | `hookSpecificOutput.decision.behavior: allow` (PermissionRequest output shape — distinct from Gate) |
+| Permission | `Deny` or text | `hookSpecificOutput.decision.behavior: deny`. **Free-text reason is dropped** — PermissionRequest has no reason field |
+| Notification | any | _no output_ (the popup is purely informational — Claude Code's notification proceeds unchanged) |
+
+**Permission vs Gate** — both surface as the same Allow/Deny popup, but they
+hook different Claude Code events with different output schemas:
+- `Permission` (PermissionRequest) fires *only* when auto-mode couldn't
+  decide and the user would have seen the built-in permission prompt.
+  Narrow trigger; clean output. Use this as your default permission UX.
+- `Gate` (PreToolUse with a `matcher`) fires for *every* matched tool call
+  — including auto-allowed ones — so it can be noisy. Use only when you
+  want a hook to weigh in on every call to a specific tool, OR when you
+  need to round-trip a free-text reason back to Claude.
 
 ## Build & test
 
 ```powershell
 cargo build --release         # → target\release\floating-prompt.exe
-cargo test --release          # 55 unit tests
+cargo test --release          # 81 unit tests (55 core + 15 markdown + 5 notification + 6 permission)
 .\tests\smoke-ui.ps1          # spawns + screenshots every canonical state
                               # (sandboxes %LOCALAPPDATA%, doesn't
                               #  interfere with real Claude sessions)
@@ -166,9 +200,17 @@ Builds against `windows` crate 0.52.
   their popup when their turn comes up. No named pipes / IPC — just
   filesystem polling.
 
-- **Per-project palettes.** Six embedded `Palette` structs, 16 color
+- **Per-project palettes.** Six embedded `Palette` structs, 17 color
   slots each. Resolution at popup launch:
   `--palette` flag → `state.json["palettes"][project]` → `default`.
+
+- **Markdown rendering.** `pulldown-cmark` parses the message into a
+  cleaned `StyledText { text, spans, code_blocks }` (UTF-16 offsets, the
+  index space DirectWrite uses). One `IDWriteTextLayout` carries the whole
+  message; `SetFontWeight` / `SetFontStyle` / `SetFontFamilyName` apply
+  per-range styles after creation. Code backgrounds are filled rects under
+  the glyphs, computed via `HitTestTextRange`. The parsed result lives on
+  `WindowState` so a paint doesn't re-parse.
 
 - **Global keyboard hook.** `WH_KEYBOARD_LL` sets thread-local atomic
   flags for Esc presses; the UI thread polls them from a 30 ms timer so

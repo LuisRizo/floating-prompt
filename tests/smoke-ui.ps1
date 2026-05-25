@@ -267,6 +267,28 @@ try {
         -Mode "single" `
         -Project "auth-service" `
         -HoverX 260 -HoverY 240
+
+    # ---------- Markdown rendering (R10) ----------
+    $mdMsg = @(
+        "Refactored the **auth handler** to use the new lease primitive. Quick summary:",
+        "",
+        "- Renamed ``acquireToken()`` to ``leaseToken()`` for consistency with the *async* siblings.",
+        "- Removed the inline ``Mutex<HashMap>`` in favor of a sharded LRU.",
+        "- The hot path now looks like this:",
+        "",
+        '```rust',
+        'fn lease_token(id: TokenId) -> Result<Lease> {',
+        '    LEASES.with(|m| m.acquire(id, Duration::from_secs(30)))',
+        '}',
+        '```',
+        "",
+        "All 240 tests pass. Want me to open the PR?"
+    ) -join "`n"
+
+    Capture-Case -Name "10-markdown-mixed" `
+        -Title "Agent finished" `
+        -Message $mdMsg `
+        -Placeholder "Reply to continue, or double-Esc to let Claude stop."
 }
 finally {
     $env:LOCALAPPDATA = $origLocalAppData
