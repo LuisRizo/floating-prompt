@@ -1,0 +1,10 @@
+{
+  "name": "floating-prompt",
+  "version": "0.3.0",
+  "description": "Blocks each Claude Code turn behind a topmost, no-activate floating window. Answer in the popup to continue the turn; double-Esc (focus-independent) dismisses. Pure Win32 + Direct2D + DirectWrite custom-painted UI.",
+  "author": { "name": "LuisRizo" },
+  "homepage": "https://github.com/LuisRizo/floating-prompt",
+  "repository": "https://github.com/LuisRizo/floating-prompt",
+  "license": "MIT",
+  "keywords": ["hooks", "ui", "windows", "rust", "direct2d"]
+}

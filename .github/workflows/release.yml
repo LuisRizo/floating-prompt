@@ -1,0 +1,86 @@
+name: Release
+
+# Tag a new version: `git tag v0.3.0 && git push --tags`.
+#
+# Triggers a Windows build, verifies the tag matches Cargo.toml, and
+# publishes a GitHub Release with the prebuilt binary attached. Plugin
+# users install the committed binary from main via /plugin install; the
+# Release asset is for direct downloads / non-plugin installs.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo.toml version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $manifest = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($tag -ne $manifest) {
+            Write-Error "Tag '${{ github.ref_name }}' (version $tag) does not match Cargo.toml version $manifest"
+            exit 1
+          }
+          Write-Host "Version OK: $tag"
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Run tests
+        run: cargo test --release --locked
+
+      - name: Verify committed plugin binary is present
+        shell: pwsh
+        run: |
+          if (-not (Test-Path hooks/floating-prompt.exe)) {
+            Write-Error "hooks/floating-prompt.exe is missing - plugin install will be broken. Run .\build.ps1 and commit the binary before tagging."
+            exit 1
+          }
+          $size = (Get-Item hooks/floating-prompt.exe).Length
+          Write-Host "Committed binary present ($([Math]::Round($size / 1KB)) KB)"
+
+      - name: Stage release artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item -Force target/release/floating-prompt.exe artifacts/floating-prompt.exe
+          Get-FileHash artifacts/floating-prompt.exe -Algorithm SHA256 | Format-List
+          Get-FileHash artifacts/floating-prompt.exe -Algorithm SHA256 | ForEach-Object {
+              "$($_.Hash)  floating-prompt.exe"
+          } | Out-File -Encoding ascii artifacts/floating-prompt.exe.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/floating-prompt.exe
+            artifacts/floating-prompt.exe.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          body: |
+            Install as a Claude Code plugin (no download needed):
+
+                /plugin marketplace add LuisRizo/floating-prompt@${{ github.ref_name }}
+                /plugin install floating-prompt@floating-prompt-marketplace
+
+            Or download `floating-prompt.exe` below for manual install.
+            `floating-prompt.exe.sha256` contains the SHA-256 checksum of
+            this build (CI-built on `windows-latest`).

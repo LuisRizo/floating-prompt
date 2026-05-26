@@ -1,6 +1,0 @@
-{
-  "name": "floating-prompt",
-  "version": "0.3.0",
-  "description": "Blocks each Claude Code turn behind a floating window; answer to continue, double-Esc to dismiss.",
-  "author": { "name": "LuisRizo" }
-}

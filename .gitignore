@@ -1,9 +1,6 @@
 # Rust build artifacts
 /target/
 
-# Built binary placed by build.ps1 for the plugin system (regenerable)
-/hooks/floating-prompt.exe
-
 # Smoke-test screenshots (regenerable; large)
 /tests/screenshots/
 

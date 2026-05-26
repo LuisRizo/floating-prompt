@@ -1,7 +1,0 @@
-{
-  "name": "floating-prompt-marketplace",
-  "owner": { "name": "LuisRizo" },
-  "plugins": [
-    { "name": "floating-prompt", "source": "./", "description": "Blocking floating window for Claude Code." }
-  ]
-}

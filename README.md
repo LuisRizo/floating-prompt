@@ -39,41 +39,45 @@ follows a designed style rather than the default Win32 chrome.
 
 ## Install
 
-Installs as a standard Claude Code plugin — the plugin system reads
-[`hooks.json`](hooks.json) and wires the 4 hook events automatically. No
-`settings.json` editing.
+Windows only. Inside Claude Code:
 
-Requires the Rust toolchain (get it from [rustup.rs](https://rustup.rs/) if
-missing).
+```
+/plugin marketplace add LuisRizo/floating-prompt
+/plugin install floating-prompt@floating-prompt-marketplace
+```
 
-**Step 1** — build the binary:
+That's it. The prebuilt binary lives at
+[`hooks/floating-prompt.exe`](hooks/floating-prompt.exe) in the repo, so
+the plugin system has everything it needs — no Rust toolchain, no build
+step, no `settings.json` editing. Hooks are hot-loaded; no Claude Code
+restart needed.
+
+Verify with `/hooks` and `/plugin list`. The four hook events the plugin
+declares ([`hooks/hooks.json`](hooks/hooks.json)) — Stop, PreToolUse
+(AskUserQuestion / ExitPlanMode), Notification, PermissionRequest — are
+wired automatically.
+
+To pin a specific release: `/plugin marketplace add LuisRizo/floating-prompt@v0.3.0`.
+
+To remove: `/plugin uninstall floating-prompt@floating-prompt-marketplace`.
+
+### Build from source (contributors)
+
+If you've cloned the repo and want to rebuild the binary locally:
 
 ```powershell
 .\build.ps1
 ```
 
-This runs `cargo build --release` and copies the resulting `.exe` to
-`./hooks/floating-prompt.exe`, where `${CLAUDE_PLUGIN_ROOT}` will find it
-after the plugin install.
-
-**Step 2** — install the plugin from inside Claude Code:
+This runs `cargo build --release` and copies the result to
+`./hooks/floating-prompt.exe`, which is where `${CLAUDE_PLUGIN_ROOT}/hooks/`
+resolves to. Then either commit the binary (the CI release workflow checks
+freshness on tag), or add the local checkout as a marketplace for testing:
 
 ```
-/plugin marketplace add <absolute-path-to-this-repo>
+/plugin marketplace add C:\path\to\your\checkout
 /plugin install floating-prompt@floating-prompt-marketplace
 ```
-
-The two slash commands register the local marketplace
-([`marketplace.json`](marketplace.json)) and install the plugin
-([`plugin.json`](plugin.json) + [`hooks.json`](hooks.json)). Hooks are
-hot-loaded — no Claude Code restart needed.
-
-Verify with `/hooks` and `/plugin list`.
-
-To remove: `/plugin uninstall floating-prompt@floating-prompt-marketplace`
-unwires every hook the plugin registered. Run `.\build.ps1` again any time
-to rebuild after a source change, then `/plugin update floating-prompt` (or
-reinstall) to pick up the new binary.
 
 <details>
 <summary>Manual install (no plugin system)</summary>
@@ -226,15 +230,18 @@ Builds against `windows` crate 0.52.
 ## Layout
 
 ```
-main.rs                          single-file Rust binary (~5 KLOC)
-Cargo.toml                       windows 0.52 + serde_json + pulldown-cmark
-plugin.json / hooks.json         Claude Code plugin manifest + hook bindings
-marketplace.json                 single-plugin marketplace declaration
-build.ps1                        cargo build + place exe at hooks/
-settings.fragment.json           hook block reference (for manual install)
-REQUIREMENTS.md                  R1-R9 spec + deferred items
-DESIGN-BRIEF.md                  historical design brief for the redesign
-skills/floating-prompt/SKILL.md  bundled /floating-prompt skill
-design/                          design source assets (jsx, html, palettes.js)
-tests/smoke-ui.ps1               sandboxed live-screenshot harness
+main.rs                              single-file Rust binary (~5 KLOC)
+Cargo.toml                           windows 0.52 + serde_json + pulldown-cmark
+.claude-plugin/plugin.json           Claude Code plugin manifest
+.claude-plugin/marketplace.json      single-plugin marketplace declaration
+hooks/hooks.json                     hook event bindings (Stop, PreToolUse, ...)
+hooks/floating-prompt.exe            prebuilt Windows binary (committed)
+build.ps1                            cargo build + refresh hooks/ binary
+.github/workflows/release.yml        on tag: verify build, publish GitHub Release
+settings.fragment.json               hook block reference (for manual install)
+REQUIREMENTS.md                      R1-R9 spec + deferred items
+DESIGN-BRIEF.md                      historical design brief for the redesign
+skills/floating-prompt/SKILL.md      bundled /floating-prompt skill
+design/                              design source assets (jsx, html, palettes.js)
+tests/smoke-ui.ps1                   sandboxed live-screenshot harness
 ```

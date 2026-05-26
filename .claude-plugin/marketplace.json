@@ -1,0 +1,17 @@
+{
+  "name": "floating-prompt-marketplace",
+  "description": "Single-plugin marketplace for floating-prompt, a Windows-native floating popup that blocks Claude Code hooks (Stop, AskUserQuestion, ExitPlanMode, Notification, PermissionRequest) until the user answers or dismisses with double-Esc.",
+  "owner": { "name": "LuisRizo" },
+  "plugins": [
+    {
+      "name": "floating-prompt",
+      "source": "./",
+      "description": "Blocks each Claude Code turn behind a topmost, no-activate floating window; answer to continue, double-Esc to dismiss.",
+      "homepage": "https://github.com/LuisRizo/floating-prompt",
+      "repository": "https://github.com/LuisRizo/floating-prompt",
+      "license": "MIT",
+      "keywords": ["hooks", "ui", "windows", "rust", "direct2d"],
+      "category": "ui"
+    }
+  ]
+}
