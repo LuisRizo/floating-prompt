@@ -19,15 +19,12 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
-      - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
 
       - name: Verify tag matches Cargo.toml version
         shell: pwsh
@@ -67,7 +64,7 @@ jobs:
           } | Out-File -Encoding ascii artifacts/floating-prompt.exe.sha256
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/floating-prompt.exe
