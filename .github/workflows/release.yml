@@ -1,6 +1,6 @@
 name: Release
 
-# Tag a new version: `git tag v0.3.0 && git push --tags`.
+# Tag a new version: `git tag v0.1.0 && git push --tags`.
 #
 # Triggers a Windows build, verifies the tag matches Cargo.toml, and
 # publishes a GitHub Release with the prebuilt binary attached. Plugin

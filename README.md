@@ -35,7 +35,7 @@ build step, no `settings.json` editing. Hooks are hot-loaded; no Claude
 Code restart needed.
 
 Verify with `/hooks` and `/plugin list`. To pin a specific release:
-`/plugin marketplace add LuisRizo/floating-prompt@v0.3.0`. To remove:
+`/plugin marketplace add LuisRizo/floating-prompt@v0.1.0`. To remove:
 `/plugin uninstall floating-prompt@floating-prompt-marketplace`.
 
 ## What you get
