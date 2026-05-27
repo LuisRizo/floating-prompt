@@ -28,7 +28,11 @@ $dir = Split-Path $state_path -Parent
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 $state = if (Test-Path $state_path) { Get-Content $state_path -Raw | ConvertFrom-Json } else { New-Object PSObject }
 $state | Add-Member -NotePropertyName enabled -NotePropertyValue $false -Force   # use $true for /on
-$state | ConvertTo-Json -Depth 5 | Set-Content $state_path -Encoding UTF8
+$json = $state | ConvertTo-Json -Depth 5
+# Write UTF-8 WITHOUT BOM. PS 5.1's `Set-Content -Encoding UTF8` adds one,
+# and the .exe (older builds without the BOM-strip fix) silently rejects
+# the file, falling back to defaults and re-enabling the popup.
+[System.IO.File]::WriteAllText($state_path, $json, (New-Object System.Text.UTF8Encoding($false)))
 ```
 
 The change is picked up by the next hook invocation; no restart of Claude
@@ -74,7 +78,9 @@ $state = if (Test-Path $state_path) { Get-Content $state_path -Raw | ConvertFrom
 if (-not $state.palettes) { $state | Add-Member -NotePropertyName palettes -NotePropertyValue @{} -Force }
 $project = Split-Path -Leaf (Get-Location)
 $state.palettes.$project = '<name>'
-$state | ConvertTo-Json -Depth 5 | Set-Content $state_path -Encoding UTF8
+$json = $state | ConvertTo-Json -Depth 5
+# Write UTF-8 WITHOUT BOM (see /off block above for why).
+[System.IO.File]::WriteAllText($state_path, $json, (New-Object System.Text.UTF8Encoding($false)))
 ```
 
 Then tell the user: "Palette set to **<name>** for project `<project>`. It'll

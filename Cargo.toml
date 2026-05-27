@@ -1,6 +1,6 @@
 [package]
 name = "floating-prompt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Topmost, no-activate floating prompt window for Claude Code hooks with multi-session queue and remembered position."
 license = "MIT"

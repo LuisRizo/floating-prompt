@@ -915,7 +915,13 @@ fn load_state_from(path: &Path) -> PersistentState {
         Ok(s) => s,
         Err(_) => return PersistentState::default(),
     };
-    serde_json::from_str::<PersistentState>(&raw).unwrap_or_default()
+    // Strip a leading UTF-8 BOM (U+FEFF) if present. PS 5.1's
+    // `Set-Content -Encoding UTF8` writes one by default; serde_json is
+    // BOM-strict and would otherwise reject the file silently, falling
+    // back to PersistentState::default() with `enabled: true` — which
+    // breaks `/floating-prompt off` whenever the skill writes state.json.
+    let trimmed = raw.trim_start_matches('\u{FEFF}');
+    serde_json::from_str::<PersistentState>(trimmed).unwrap_or_default()
 }
 
 fn save_state_to(path: &Path, state: &PersistentState) -> std::io::Result<()> {
@@ -4350,6 +4356,26 @@ mod tests {
         save_state_to(&path, &s).unwrap();
         let after = load_state_from(&path);
         assert!(!after.enabled, "enabled=false must survive disk roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn state_load_strips_utf8_bom() {
+        // Regression: PS 5.1's `Set-Content -Encoding UTF8` writes a
+        // UTF-8 BOM (EF BB BF). Without BOM-stripping, serde_json
+        // rejects the file and `load_state_from` falls back to
+        // PersistentState::default() (enabled: true), silently negating
+        // `/floating-prompt off`.
+        let dir = std::env::temp_dir().join(format!("fp-bom-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("state.json");
+        let json = r#"{"x":42,"y":99,"palettes":{},"enabled":false}"#;
+        let mut bytes: Vec<u8> = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(json.as_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        let st = load_state_from(&path);
+        assert!(!st.enabled, "BOM-prefixed state.json must still parse enabled=false");
+        assert_eq!(st.x, Some(42), "BOM-prefixed state.json must parse other fields too");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
